@@ -1,0 +1,116 @@
+import subprocess
+import urllib.parse
+import csv
+import os
+
+# Grafana API details
+GRAFANA_URL = "https://us.aether.nss.vzwnet.com/gem/prometheus/api/v1/query_range"
+
+# Load API keys from a text file
+def load_api_keys(filename):
+    api_keys = {}
+    with open(filename, "r") as file:
+        for line in file:
+            function, key = line.strip().split(":")
+            api_keys[function.strip().upper()] = key.strip()
+    return api_keys
+
+# Load metric names from a text file
+def load_metric_names(filename):
+    with open(filename, "r") as file:
+        return [line.strip() for line in file if line.strip()]
+
+# Execute cURL command and fetch response
+def execute_curl_command(curl_command):
+    try:
+        result = subprocess.run(curl_command, shell=True, text=True, capture_output=True)
+        if result.returncode != 0:
+            print(f"Error executing cURL command: {result.stderr}")
+            return None
+        return result.stdout
+    except Exception as e:
+        print(f"Exception while executing cURL command: {e}")
+        return None
+
+# Build cURL command
+def build_curl_command(api_key, query, start_epoch, end_epoch):
+    encoded_query = urllib.parse.quote(query)
+    curl_command = (
+        f"curl --location --globoff '{GRAFANA_URL}?"
+        f"query={encoded_query}&start={start_epoch}&end={end_epoch}&step=60m' "
+        f"--header 'Authorization: Bearer {api_key}'"
+    )
+    return curl_command
+
+# Save results to CSV
+def save_to_csv(data, output_file):
+    keys = data[0].keys() if data else ["metric_name", "fqdn", "metric_sum", "metric_increase"]
+    with open(output_file, "w", newline="") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=keys)
+        writer.writeheader()
+        writer.writerows(data)
+
+# Main function
+def main():
+    # Load API keys and metric files
+    api_keys = load_api_keys("api_keys.txt")
+    metric_files = {
+        "AMF": "amf_metrics.txt",
+        "SMF": "smf_metrics.txt",
+        "UPF": "upf_metrics.txt",
+    }
+
+    # Time range for data fetching
+    start_epoch = "1717632000"  # Replace with actual epoch start time
+    end_epoch = "1733356800"    # Replace with actual epoch end time
+
+    all_results = []
+
+    for function, filename in metric_files.items():
+        print(f"Processing {function} metrics...")
+        api_key = api_keys.get(function)
+        if not api_key:
+            print(f"No API key found for {function}. Skipping...")
+            continue
+
+        metric_names = load_metric_names(filename)
+
+        for metric_name in metric_names:
+            print(f"Fetching data for metric: {metric_name}...")
+
+            # Build queries
+            sum_query = f"sum by(kubernetes_namespace) (sum_over_time({metric_name}[1h]))" \
+                if function in ["AMF", "SMF"] else f"sum by(local_dn) (sum_over_time({metric_name}[1h]))"
+            increase_query = f"sum by(kubernetes_namespace) (increase({metric_name}[1h]))" \
+                if function in ["AMF", "SMF"] else f"sum by(local_dn) (increase({metric_name}[1h]))"
+
+            # Fetch data for sum query
+            curl_command_sum = build_curl_command(api_key, sum_query, start_epoch, end_epoch)
+            response_sum = execute_curl_command(curl_command_sum)
+
+            # Fetch data for increase query
+            curl_command_increase = build_curl_command(api_key, increase_query, start_epoch, end_epoch)
+            response_increase = execute_curl_command(curl_command_increase)
+
+            # Parse and store results
+            # You need to parse the JSON response from `response_sum` and `response_increase`
+            # Assuming the response is JSON and contains a "data" key with "result" subkey
+            # Below is a placeholder to illustrate saving results
+            result = {
+                "metric_name": metric_name,
+                "fqdn": "example_fqdn",  # Replace with actual value from response
+                "metric_sum": "example_sum_value",  # Replace with actual sum value
+                "metric_increase": "example_increase_value",  # Replace with actual increase value
+            }
+            all_results.append(result)
+
+    # Save all results to CSV
+    if all_results:
+        output_file = "metrics_data.csv"
+        print(f"Saving data to {output_file}...")
+        save_to_csv(all_results, output_file)
+    else:
+        print("No data fetched.")
+
+if __name__ == "__main__":
+    main()
