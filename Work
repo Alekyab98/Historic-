@@ -1,0 +1,112 @@
+import subprocess
+import csv
+import urllib.parse
+import os
+
+# Grafana API details
+GRAFANA_URL = "https://us.aether.nss.vzwnet.com/gem/prometheus/api/v1/query_range"
+
+# Load API keys from a text file
+def load_api_keys(api_keys_file):
+    api_keys = {}
+    with open(api_keys_file, "r") as file:
+        for line in file:
+            function, key = line.strip().split(":")
+            api_keys[function.strip()] = key.strip()
+    return api_keys
+
+# Load metric names from a text file
+def load_metrics(metric_file):
+    with open(metric_file, "r") as file:
+        metrics = [line.strip() for line in file if line.strip()]
+    return metrics
+
+# Build cURL command
+def build_curl_command(api_key, query, start_epoch, end_epoch):
+    encoded_query = urllib.parse.quote(query)
+    curl_command = (
+        f"curl --location --globoff '{GRAFANA_URL}?"
+        f"query={encoded_query}&start={start_epoch}&end={end_epoch}&step=60m' "
+        f"--header 'Authorization: Bearer {api_key}'"
+    )
+    return curl_command
+
+# Execute cURL command and get data
+def execute_curl_and_get_data(curl_command):
+    try:
+        result = subprocess.run(curl_command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return result.stdout.decode("utf-8")
+    except subprocess.CalledProcessError as e:
+        print(f"Error executing cURL command: {e.stderr.decode('utf-8')}")
+        return None
+
+# Save results to CSV
+def save_to_csv(data, output_file):
+    keys = data[0].keys() if data else ["metric_name", "fqdn", "metric_sum", "metric_increase"]
+    with open(output_file, "w", newline="") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=keys)
+        writer.writeheader()
+        writer.writerows(data)
+
+# Main function
+def main():
+    # File paths
+    api_keys_file = "api_keys.txt"
+    metrics_files = {
+        "AMF": "amf_metrics.txt",
+        "SMF": "smf_metrics.txt",
+        "UPF": "upf_metrics.txt",
+    }
+    output_csv = "grafana_metrics_data.csv"
+
+    # Time range (epoch time)
+    start_epoch = "1717632000"  # Replace with actual start time
+    end_epoch = "1733356800"    # Replace with actual end time
+
+    # Load API keys
+    api_keys = load_api_keys(api_keys_file)
+
+    all_results = []
+
+    # Process each function
+    for function, metrics_file in metrics_files.items():
+        if function not in api_keys:
+            print(f"No API key found for {function}. Skipping...")
+            continue
+        
+        print(f"Processing {function} metrics...")
+        metrics = load_metrics(metrics_file)
+        api_key = api_keys[function]
+
+        for metric_name in metrics:
+            print(f"Fetching data for metric: {metric_name}")
+            
+            # Build queries
+            sum_query = f"sum by (kubernetes_namespace) (sum_over_time({metric_name}[1h]))"
+            increase_query = f"sum by (kubernetes_namespace) (increase({metric_name}[1h]))"
+
+            # Execute sum query
+            sum_curl_command = build_curl_command(api_key, sum_query, start_epoch, end_epoch)
+            sum_data = execute_curl_and_get_data(sum_curl_command)
+
+            # Execute increase query
+            increase_curl_command = build_curl_command(api_key, increase_query, start_epoch, end_epoch)
+            increase_data = execute_curl_and_get_data(increase_curl_command)
+
+            # Combine results
+            if sum_data and increase_data:
+                all_results.append({
+                    "metric_name": metric_name,
+                    "fqdn": "kubernetes_namespace",  # Adjust as needed for UPF
+                    "metric_sum": sum_data,
+                    "metric_increase": increase_data,
+                })
+            else:
+                print(f"Skipping metric {metric_name} due to missing data.")
+
+    # Save results to CSV
+    save_to_csv(all_results, output_csv)
+    print(f"Data saved to {output_csv}")
+
+if __name__ == "__main__":
+    main()
