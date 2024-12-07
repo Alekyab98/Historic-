@@ -1,0 +1,90 @@
+import requests
+import json
+import pandas as pd
+from urllib.parse import quote
+
+# API URL and Key details
+GRAFANA_URL = "https://us.aether.nss.vzwnet.com/gem/prometheus/api/v1/query_range"
+API_KEYS = {
+    "AMF": "ZXJpY3Nzb24tYW1mOk5XY3RZMjl5WlMxa1lYUmhMWEJ5YjJSMVkzUXRjbVZoWkRveU4zZ3JYekV5TmlnclFDWXpNSHdxTWpNd1BDcDBSa0U9",
+    "UPF": "ZXJpY3Nzb24tdXBmOk5XY3RZMjl5WlMxa1lYUmhMWEJ5YjJSMVkzUXRjbVZoWkRveU4zZ3JYekV5TmlnclFDWXpNSHdxTWpNd1BDcDBSa0U9",
+    "SMF": "ZXJpY3Nzb24tc21mOk5XY3RZMjl5WlMxa1lYUmhMWEJ5YjJSMVkzUXRjbVZoWkRveU4zZ3JYekV5TmlnclFDWXpNSHdxTWpNd1BDcDBSa0U9",
+}
+FUNCTIONS = ["AMF", "SMF", "UPF"]
+
+# Function to build cURL command
+def build_curl_command(api_key, query, start_epoch, end_epoch):
+    encoded_query = quote(query)
+    curl_command = f"curl -X GET '{GRAFANA_URL}?query={encoded_query}&start={start_epoch}&end={end_epoch}&step=60m' -H 'Authorization: Bearer {api_key}'"
+    return curl_command
+
+# Function to execute the cURL command and get data
+def execute_curl_and_get_data(curl_command):
+    import subprocess
+    try:
+        result = subprocess.run(curl_command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return result.stdout.decode('utf-8')
+    except subprocess.CalledProcessError as e:
+        print(f"Error executing cURL command: {e.stderr.decode('utf-8')}")
+        return None
+
+# Function to save data to CSV
+def save_to_csv(data, output_file):
+    keys = data[0].keys() if data else []
+    with open(output_file, 'w', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=keys)
+        writer.writeheader()
+        writer.writerows(data)
+
+# Main function
+def main():
+    # Define the start and end epoch times
+    start_epoch = 1717632000  # Example start time (use the actual epoch time)
+    end_epoch = 1733356800  # Example end time (use the actual epoch time)
+
+    all_results = []
+
+    # Loop through each function
+    for function in FUNCTIONS:
+        print(f"Processing {function} metrics...")
+        # Fetch metric names from a file or other source (e.g., amf_metrics.txt)
+        metric_file = f"{function.lower()}_metrics.txt"
+        
+        with open(metric_file, "r") as file:
+            metrics = file.readlines()
+
+        for metric in metrics:
+            metric_name = metric.strip()
+            query = f"sum by(kubernetes_namespace)({metric_name}[1h])"  # Example query (adjust as needed)
+            
+            # Build and execute the cURL command
+            curl_command = build_curl_command(API_KEYS[function], query, start_epoch, end_epoch)
+            print(f"Executing cURL command: {curl_command}")
+            response_data = execute_curl_and_get_data(curl_command)
+
+            if response_data:
+                try:
+                    # Parse JSON response and extract relevant data
+                    json_data = json.loads(response_data)
+                    for result in json_data['data']['result']:
+                        row = {
+                            "timestamp": result['timestamp'],
+                            "kubernetes_namespace": result['metric']['kubernetes_namespace'],
+                            "metric_name": metric_name,
+                            "metric_sum": result['value'][1],  # Sum value
+                            "metric_increase": result['value'][1]  # Adjust if required to calculate increase
+                        }
+                        all_results.append(row)
+                except Exception as e:
+                    print(f"Error parsing response for {metric_name}: {e}")
+            
+    # Save the results to CSV
+    if all_results:
+        save_to_csv(all_results, "metrics_data.csv")
+        print("Saved results to metrics_data.csv")
+    else:
+        print("No data fetched")
+
+# Run the script
+if __name__ == "__main__":
+    main()
