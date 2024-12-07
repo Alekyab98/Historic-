@@ -1,0 +1,95 @@
+import subprocess
+import urllib.parse
+import pandas as pd
+
+# Grafana API details
+GRAFANA_URL = "https://us.aether.nss.vzwnet.com/gem/prometheus/api/v1/query_range"
+
+# Load API keys from a text file
+def load_api_keys(filename):
+    api_keys = {}
+    with open(filename, "r") as file:
+        for line in file:
+            function, key = line.strip().split(":")
+            api_keys[function.strip().upper()] = key.strip()
+    return api_keys
+
+# Load metric names from a text file
+def load_metric_names(filename):
+    with open(filename, "r") as file:
+        return [line.strip() for line in file if line.strip()]
+
+# Execute curl command and fetch data
+def execute_curl_and_get_data(curl_command):
+    try:
+        result = subprocess.run(curl_command, shell=True, text=True, capture_output=True)
+        if result.returncode != 0:
+            print(f"Error executing curl command: {result.stderr}")
+            return None
+        return result.stdout
+    except Exception as e:
+        print(f"Exception while executing curl command: {e}")
+        return None
+
+# Build and execute cURL command
+def fetch_metric_data(api_key, query, start_epoch, end_epoch):
+    encoded_query = urllib.parse.quote(query)
+    curl_command = (
+        f"curl --location --globoff '{GRAFANA_URL}?"
+        f"query={encoded_query}&start={start_epoch}&end={end_epoch}&step=60m' "
+        f"--header 'Authorization: Bearer {api_key}'"
+    )
+    print(f"Generated cURL Command:\n{curl_command}")
+    response_data = execute_curl_and_get_data(curl_command)
+    return response_data
+
+# Main function
+def main():
+    # Load API keys and metric files
+    api_keys = load_api_keys("api_keys.txt")
+    metric_files = {
+        "AMF": "amf_metrics.txt",
+        "SMF": "smf_metrics.txt",
+        "UPF": "upf_metrics.txt",
+    }
+
+    # Time range for data fetching
+    start_epoch = 1717632000  # Replace with actual epoch start time
+    end_epoch = 1733356800    # Replace with actual epoch end time
+
+    all_results = []
+
+    for function, filename in metric_files.items():
+        print(f"Processing {function} metrics...")
+        api_key = api_keys.get(function)
+        if not api_key:
+            print(f"No API key found for {function}. Skipping...")
+            continue
+
+        metric_names = load_metric_names(filename)
+        for metric_name in metric_names:
+            print(f"Fetching data for metric: {metric_name}...")
+
+            # Query sum_over_time
+            sum_query = (
+                f"sum by(kubernetes_namespace) (sum_over_time({metric_name}[1h]))"
+                if function in ["AMF", "SMF"]
+                else f"sum by(local_dn) (sum_over_time({metric_name}[1h]))"
+            )
+            sum_data = fetch_metric_data(api_key, sum_query, start_epoch, end_epoch)
+
+            # Query increase
+            increase_query = (
+                f"sum by(kubernetes_namespace) (increase({metric_name}[1h]))"
+                if function in ["AMF", "SMF"]
+                else f"sum by(local_dn) (increase({metric_name}[1h]))"
+            )
+            increase_data = fetch_metric_data(api_key, increase_query, start_epoch, end_epoch)
+
+            # Process results (assuming successful data fetch)
+            # Add your parsing logic here if `sum_data` and `increase_data` are in JSON format.
+
+    print("Data fetching completed.")
+
+if __name__ == "__main__":
+    main()
