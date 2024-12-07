@@ -1,0 +1,113 @@
+import subprocess
+import csv
+import urllib.parse
+
+# Grafana API details
+GRAFANA_URL = "https://us.aether.nss.vzwnet.com/gem/prometheus/api/v1/query_range"
+
+# Load API keys from a text file
+def load_api_keys(file_path):
+    api_keys = {}
+    with open(file_path, "r") as f:
+        for line in f:
+            if line.strip():
+                function, api_key = line.strip().split(":")
+                api_keys[function.strip().lower()] = api_key.strip()
+    return api_keys
+
+# Build cURL command
+def build_curl_command(api_key, query, start_epoch, end_epoch):
+    encoded_query = urllib.parse.quote(query)  # URL encode the query
+    curl_command = [
+        "curl",
+        "-location",
+        "--globoff",
+        f"{GRAFANA_URL}?query={encoded_query}&start={start_epoch}&end={end_epoch}&step=60m",
+        "-header",
+        f"Authorization: Bearer {api_key}"
+    ]
+    return curl_command
+
+# Execute cURL command and get data
+def execute_curl_and_get_data(curl_command):
+    try:
+        print(f"Executing: {' '.join(curl_command)}")  # Debugging output
+        result = subprocess.run(curl_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode == 0:
+            return result.stdout
+        else:
+            print(f"cURL failed with error: {result.stderr}")
+            return None
+    except Exception as e:
+        print(f"Error executing cURL command: {e}")
+        return None
+
+# Parse raw response to extract metric data
+def parse_response(raw_data, metric_name):
+    try:
+        import json
+        data = json.loads(raw_data)
+        results = []
+        for result in data.get("data", {}).get("result", []):
+            for value in result.get("values", []):
+                event_time, metric_value = value
+                results.append({
+                    "event_time": event_time,
+                    "fqdn": result.get("metric", {}).get("kubernetes_namespace", "unknown"),
+                    "metric_sum": metric_value,
+                    "metric_name": metric_name
+                })
+        return results
+    except json.JSONDecodeError:
+        print("Error decoding JSON response.")
+        return []
+
+# Save results to a CSV file
+def save_to_csv(data, output_file):
+    keys = data[0].keys() if data else ["event_time", "fqdn", "metric_name", "metric_sum"]
+    with open(output_file, "w", newline="") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=keys)
+        writer.writeheader()
+        writer.writerows(data)
+
+# Main function
+def main():
+    api_keys_file = "api_keys.txt"
+    metrics_file = "metrics.txt"
+    output_file = "metrics_data.csv"
+    
+    start_epoch = "1717632000"  # Replace with actual epoch start time
+    end_epoch = "1733356800"    # Replace with actual epoch end time
+    
+    api_keys = load_api_keys(api_keys_file)
+    
+    all_results = []
+    
+    with open(metrics_file, "r") as f:
+        for line in f:
+            if line.strip():
+                function, metric_name = line.strip().split(":")
+                function = function.strip().lower()
+                metric_name = metric_name.strip()
+                
+                if function not in api_keys:
+                    print(f"No API key found for {function.upper()}. Skipping...")
+                    continue
+                
+                api_key = api_keys[function]
+                query = f"sum by (kubernetes_namespace) (sum_over_time({metric_name}[1h]))"
+                curl_command = build_curl_command(api_key, query, start_epoch, end_epoch)
+                
+                raw_data = execute_curl_and_get_data(curl_command)
+                if raw_data:
+                    results = parse_response(raw_data, metric_name)
+                    all_results.extend(results)
+    
+    if all_results:
+        save_to_csv(all_results, output_file)
+        print(f"Data successfully saved to {output_file}")
+    else:
+        print("No data fetched.")
+
+if __name__ == "__main__":
+    main()
