@@ -1,0 +1,78 @@
+import subprocess
+import urllib.parse
+
+# Grafana API details
+GRAFANA_URL = "https://us.aether.nss.vzwnet.com/gem/prometheus/api/v1/query_range"
+
+# Load API keys from a text file
+def load_api_keys(filename):
+    api_keys = {}
+    with open(filename, "r") as file:
+        for line in file:
+            function, key = line.strip().split(":")
+            api_keys[function.strip().upper()] = key.strip()
+    return api_keys
+
+# Build cURL command
+def build_curl_command(api_key, query, start_epoch, end_epoch):
+    encoded_query = urllib.parse.quote(query)
+    curl_command = (
+        f"curl --location --globoff '{GRAFANA_URL}?"
+        f"query={encoded_query}&start={start_epoch}&end={end_epoch}&step=60m' "
+        f"--header 'Authorization: Bearer {api_key}'"
+    )
+    return curl_command
+
+# Execute cURL command and fetch response
+def execute_curl_command(curl_command):
+    try:
+        result = subprocess.run(curl_command, shell=True, text=True, capture_output=True)
+        if result.returncode != 0:
+            print(f"Error executing cURL command: {result.stderr}")
+            return None
+        return result.stdout
+    except Exception as e:
+        print(f"Exception while executing cURL command: {e}")
+        return None
+
+# Main function
+def main():
+    # Load API keys
+    api_keys = load_api_keys("api_keys.txt")
+    metric_files = {
+        "AMF": "amf_metrics.txt",
+        "SMF": "smf_metrics.txt",
+        "UPF": "upf_metrics.txt",
+    }
+
+    # Time range for data fetching
+    start_epoch = "1717632000"  # Replace with actual epoch start time
+    end_epoch = "1733356800"    # Replace with actual epoch end time
+
+    for function, filename in metric_files.items():
+        print(f"Processing {function} metrics...")
+        api_key = api_keys.get(function)
+        if not api_key:
+            print(f"No API key found for {function}. Skipping...")
+            continue
+
+        with open(filename, "r") as file:
+            metric_names = [line.strip() for line in file if line.strip()]
+
+        for metric_name in metric_names:
+            print(f"Fetching data for metric: {metric_name}...")
+
+            # Build queries
+            query = f"sum by(kubernetes_namespace) (sum_over_time({metric_name}[1h]))"
+            curl_command = build_curl_command(api_key, query, start_epoch, end_epoch)
+            print(f"Generated cURL Command:\n{curl_command}")
+
+            # Execute cURL command
+            response = execute_curl_command(curl_command)
+            if response:
+                print(f"Response: {response}")
+            else:
+                print(f"Failed to fetch data for {metric_name}.")
+
+if __name__ == "__main__":
+    main()
