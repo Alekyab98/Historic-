@@ -1,0 +1,114 @@
+import requests
+import json
+import pandas as pd
+from urllib.parse import quote
+import csv
+import subprocess
+
+# API URL and Key details
+GRAFANA_URL = "https://us.aether.nss.vzwnet.com/gem/prometheus/api/v1/query_range"
+
+def build_curl_command(api_key, query, start_epoch, end_epoch):
+    """
+    Builds the curl command to fetch the data from Grafana API
+    """
+    encoded_query = quote(query)
+    curl_command = f'curl --location --globoff "{GRAFANA_URL}?query={encoded_query}&start={start_epoch}&end={end_epoch}&step=60m" --header "Authorization: Bearer {api_key}"'
+    return curl_command
+
+def execute_curl_and_get_data(curl_command):
+    """
+    Executes the curl command and fetches the data.
+    """
+    try:
+        print(f"Executing cURL: {curl_command}")  # Print the curl command for debugging
+        result = subprocess.run(curl_command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        response = result.stdout.decode("utf-8")
+        print(f"Fetched Response: {response}")  # Print the API response for debugging
+    except subprocess.CalledProcessError as e:
+        print(f"Error executing cURL command: {e.stderr.decode('utf-8')}")
+        return None
+    return response
+
+def parse_and_save_data(response, metric_name, output_file):
+    """
+    Parse the response JSON and save the relevant fields to CSV.
+    """
+    try:
+        data = json.loads(response)
+        # Check if data is not empty or contains valid values
+        if "data" not in data or "result" not in data["data"]:
+            print(f"No data found for {metric_name}. Skipping CSV creation.")
+            return
+
+        result = data["data"]["result"]
+        csv_data = []
+        for item in result:
+            for value in item["values"]:
+                timestamp = value[0]
+                metric_value = value[1]
+                kubernetes_namespace = item["metric"].get("kubernetes_namespace", "unknown")
+                fqdn = item["metric"].get("fqdn", "unknown")
+                
+                # Add data to CSV list
+                csv_data.append({
+                    "metric_name": metric_name,
+                    "timestamp": timestamp,
+                    "kubernetes_namespace": kubernetes_namespace,
+                    "fqdn": fqdn,
+                    "metric_sum": metric_value,
+                    "metric_increase": metric_value,  # Assuming we want the same value in both columns for simplicity
+                })
+        
+        # Save the results to CSV
+        with open(output_file, 'w', newline='') as csvfile:
+            keys = ["metric_name", "timestamp", "kubernetes_namespace", "fqdn", "metric_sum", "metric_increase"]
+            writer = csv.DictWriter(csvfile, fieldnames=keys)
+            writer.writeheader()
+            writer.writerows(csv_data)
+            print(f"Data written to {output_file}")
+    except Exception as e:
+        print(f"Error parsing response: {e}")
+
+def main():
+    # Example Input
+    api_keys = {
+        'amf': 'ZXJzY...V1aGVuZXQ==',  # Replace with your actual API key for AMF
+        'smf': 'ZXJzY...U3Z9W2k=',  # Replace with your actual API key for SMF
+        'upf': 'ZXJzY...U3ZP0w==',  # Replace with your actual API key for UPF
+    }
+    
+    # Example metrics to query
+    metrics = {
+        'amf': ['pcmm_vs_udm_sdmgetatt_5gs'],
+        'smf': ['pcf_smpc_disc_req'],
+        'upf': ['association_setup_rsp_acc_sent'],
+    }
+
+    # Define start and end epoch times
+    start_epoch = "1717632000"  # Replace with actual start epoch time
+    end_epoch = "1733356800"    # Replace with actual end epoch time
+
+    # Iterate through each function and its metrics
+    for function, metric_names in metrics.items():
+        api_key = api_keys.get(function)
+        if not api_key:
+            print(f"No API key found for {function}. Skipping...")
+            continue
+
+        for metric_name in metric_names:
+            print(f"Processing {metric_name} metrics for {function}...")
+            
+            query = f"sum by(kubernetes_namespace) ({metric_name}[1h])"  # Modify your query here based on the metric
+            output_file = f"{function}_{metric_name}_data.csv"
+            
+            curl_command = build_curl_command(api_key, query, start_epoch, end_epoch)
+            response = execute_curl_and_get_data(curl_command)
+            
+            if response:
+                parse_and_save_data(response, metric_name, output_file)
+            else:
+                print(f"No data fetched for {metric_name}. Skipping CSV creation.")
+
+if __name__ == "__main__":
+    main()
